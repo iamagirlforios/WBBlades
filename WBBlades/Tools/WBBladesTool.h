@@ -47,6 +47,7 @@ NS_ASSUME_NONNULL_BEGIN
  * disassembly
  */
 + (NSArray *)disassemWithMachOFile:(NSData *)fileData  from:(unsigned long long)begin length:(unsigned long long )size accfunDic:(NSDictionary *)accfunDic;
++ (NSArray *)disassemWithMachOFile1:(NSData *)fileData  from:(unsigned long long)begin length:(unsigned long long )size accfunDic:(NSDictionary *)accfunDic;
 
 /**
 * bind info

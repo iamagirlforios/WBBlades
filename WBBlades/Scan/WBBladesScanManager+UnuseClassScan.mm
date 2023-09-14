@@ -1004,6 +1004,10 @@ __vmAddress = (__vmAddress>(2*vm))?(__vmAddress-vm):__vmAddress;
             //屏蔽swiftUI 的some修饰的类型
             continue;
         }
+        //结构体和枚举
+        if (kind == SwiftKindStruct && ![name isEqualToString:@"ColorResource"] && ![name isEqualToString:@"ImageResource"]) {
+            isGenericType = true;
+        }
         while (kind != SwiftKindModule) {
 
             SwiftType type;
@@ -1052,7 +1056,7 @@ __vmAddress = (__vmAddress>(2*vm))?(__vmAddress-vm):__vmAddress;
             if (parentOffset > vm) parentOffset = parentOffset - vm;
             if ([self invalidParent:parentOffset])break;;
         }
-
+        
         UInt32 accessFuncContent;
         range = NSMakeRange(typeOffset + 3 * 4, sizeof(UInt32));
         [fileData getBytes:&accessFuncContent range:range];
@@ -1453,19 +1457,40 @@ __vmAddress = (__vmAddress>(2*vm))?(__vmAddress-vm):__vmAddress;
             [locker unlock];
         }
     });
-    s_cs_insn_address_array = [WBBladesTool disassemWithMachOFile:fileData from:textList.offset length:textList.size accfunDic:accfunNameList];
+    NSArray *machOFileList = [WBBladesTool disassemWithMachOFile1:fileData from:textList.offset length:textList.size accfunDic:accfunNameList];
+    s_cs_insn_address_array = machOFileList[0];
+    NSSet *allblSet = machOFileList[1];
+    
     for (int i = 0; i < symbols.count; i++) {
         WBBladesSymbolRange *symRanObj = (WBBladesSymbolRange*)symbols[i];
         if (symRanObj.symbol.length == 0 ) {
             continue;
         }
+
+        
+        
+        
         NSArray *blList = [self scanSELCallerWithBegin:symRanObj.begin end:symRanObj.end];
         // 函数实现中有bl指令
-        if (blList) {
+        if (blList && blList.count > 0) {
             for (NSString *addr in blList) {
                 NSString *symName = accfunNameList[addr];
                 if (symName && ![symRanObj.symbol hasPrefix:symName]) {
                     [swiftUsedTypeSet addObject:symName];
+                }
+            }
+        }
+        else if([symRanObj.symbol containsString:@" -> "]){  //swift方法返回符号如： WBBladesUnUseTest.StructOb2.nameout() -> () 用这个符号来调用表示方法调用
+            //这里只处理结构体、枚举...
+            for (NSString *className in genericTypes) {
+                if ([symRanObj.symbol containsString:className]) {
+                    unsigned long long begin = symRanObj.begin;
+                    if (begin > vm) begin -= vm;
+                    NSString *beginAddress = [[NSString stringWithFormat:@"#0x%llX",begin] lowercaseString];  //函数的起始地址，其实就是bl 后面的地址
+                    if ([allblSet containsObject:beginAddress]) {
+                        [swiftUsedTypeSet addObject:className];
+                        
+                    }
                 }
             }
         }

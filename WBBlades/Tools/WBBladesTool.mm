@@ -277,6 +277,117 @@
     return assemResult;
 }
 
++ (NSArray *)disassemWithMachOFile1:(NSData *)fileData  from:(unsigned long long)begin length:(unsigned long long )size accfunDic:(NSDictionary *)accfunDic {
+    
+    NSMutableArray * addressReferenceInCode = [NSMutableArray array];
+    
+    // Get compilation.
+    csh cs_handle = 0;
+    cs_err cserr;
+    if ((cserr = cs_open(CS_ARCH_ARM64, CS_MODE_ARM, &cs_handle)) != CS_ERR_OK ) {
+        NSLog(@"Failed to initialize Capstone: %d, %s.", cserr, cs_strerror(cs_errno(cs_handle)));
+        return NULL;
+    }
+    // Set the parsing mode.
+    cs_option(cs_handle, CS_OPT_MODE, CS_MODE_ARM);
+    //        cs_option(cs_handle, CS_OPT_DETAIL, CS_OPT_ON);
+    cs_option(cs_handle, CS_OPT_SKIPDATA, CS_OPT_ON);
+    
+    //总的指令数
+    unsigned long long total_count = size / 4;
+    // 最大循环次数，实际不能超过这个数+1
+    unsigned long long MaxStep = 256;
+    // 每次处理指令最大数，实际可能超过这个数
+    unsigned long long MaxEachCount = 256;
+    // 实际每次处理的指令数
+    unsigned long long each_step_count = 0;
+    // 实际需要循环step次去处理
+    unsigned long long step = 0;
+    if ((total_count / MaxEachCount) > MaxStep) {
+        each_step_count = total_count / MaxStep;
+        step = MaxStep;
+        // 如果不能整除，则再加一次循环，以免末尾的一些指令遗漏
+        if ((total_count % MaxEachCount) > 0) {
+            step++;
+        }
+    }
+    else {
+        each_step_count = MaxEachCount;
+        step = total_count / MaxEachCount;
+        // 如果不能整除，则再加一次循环，以免末尾的一些指令遗漏
+        if ((total_count % MaxEachCount) > 0) {
+            step++;
+        }
+    }
+    NSMutableDictionary * tmpDict  = [NSMutableDictionary dictionary];
+//    NSMutableDictionary * tmpDict1  = [NSMutableDictionary dictionary];
+    NSMutableSet *allBlCommon = [NSMutableSet set];
+    
+    dispatch_apply(step, dispatch_get_global_queue(0, 0), ^(size_t index) {
+        cs_insn *cs_insn = NULL;
+        char *ot_sect = (char *)[fileData bytes] + begin + index * each_step_count * 4;
+        uint64_t ot_addr = begin + index * each_step_count * 4;
+        unsigned long long ins_size  = 0;
+        if ((index + 1) * each_step_count * 4 <= size && step > 0) {
+            ins_size = each_step_count * 4;
+        }
+        else {
+            ins_size = (size - index * each_step_count * 4);// 最后那次循环可能指令数达不到each_step_count
+        }
+        size_t disasm_count = cs_disasm(cs_handle, (const uint8_t *)ot_sect, ins_size, ot_addr, 0, &cs_insn);
+        
+        NSUInteger startIndex = index * each_step_count;
+        NSMutableArray * referenceInCode = [NSMutableArray array];
+        NSMutableSet *allbl = [NSMutableSet set];
+        for (NSUInteger i=0; i<disasm_count; i++) {
+            @autoreleasepool {
+                char *dataStr = cs_insn[i].op_str;
+                char *asmstr = cs_insn[i].mnemonic;
+                if (strcmp("bl",asmstr) == 0) {
+                    NSString *addrStr = [NSString stringWithFormat:@"%s", dataStr];
+                    // 指令数组中仅存储accessfunction中存在的bl，也就是指令数组中都是有对应swift类的bl指令
+                    if (accfunDic[addrStr]) {
+                        NSString *blStr = [NSString stringWithFormat:@"%s %s", asmstr, dataStr];
+                        [referenceInCode addObject:[NSString stringWithFormat:@"%@:%lu", blStr, startIndex + i]];
+                    }
+                    //所有bl指令
+                    [allbl addObject:addrStr];
+                    continue;
+                }
+            }
+        }
+        free(cs_insn);
+        if (referenceInCode.count>0) {
+            @synchronized (tmpDict) {
+                tmpDict[[NSString stringWithFormat:@"%ld",index]] = referenceInCode;
+            }
+        }
+        if (allbl.count > 0) {
+            @synchronized (tmpDict) {
+                [allBlCommon addObjectsFromArray:allbl.allObjects];
+            }
+        }
+    });
+    // 将每次循环得到的数组整合起来
+    for (NSString *key in tmpDict.allKeys) {
+        NSArray *sub_address = tmpDict[key];
+        [addressReferenceInCode addObjectsFromArray:sub_address];
+    }
+    // “bl #0x77bc:50”，对addressReferenceInCode中的指令按所在下标大小进行排序
+    NSArray *assemResult = [addressReferenceInCode sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
+        NSArray *arr1 = [(NSString *)obj1 componentsSeparatedByString:@":"];
+        NSArray *arr2 = [(NSString *)obj2 componentsSeparatedByString:@":"];
+        if ([arr1[1] integerValue] > [arr2[1] integerValue]) {
+            return NSOrderedDescending;
+        }
+        else {
+            return NSOrderedAscending;
+        }
+    }];
+    NSLog(@"wudanlog 指令数 = %ld", allBlCommon.count);
+    return @[assemResult, allBlCommon];
+}
+
 + (unsigned long long )getSegmentWithIndex:(int)index fromFile:(NSData *)fileData{
     mach_header_64 mhHeader;
     [fileData getBytes:&mhHeader range:NSMakeRange(0, sizeof(mach_header_64))];
